@@ -1,0 +1,192 @@
+name: iOS CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+    inputs:
+      create_archive:
+        description: 'Create .xcarchive (requires code signing secrets)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+  SCHEME: remotty-ios
+  PACKAGE_PATH: ios/remotty
+  IOS_VERSION: '17.5'
+  DEVICE: 'iPhone 15'
+
+jobs:
+  build:
+    name: Build (Simulator)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve package dependencies
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild -resolvePackageDependencies \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'generic/platform=iOS'
+
+      - name: Build for iOS Simulator
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild build \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'platform=iOS Simulator,name=${{ env.DEVICE }},OS=${{ env.IOS_VERSION }}' \
+            -configuration Debug \
+            -derivedDataPath ../../DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+  test:
+    name: Test
+    runs-on: macos-14
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Resolve package dependencies
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild -resolvePackageDependencies \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'generic/platform=iOS'
+
+      - name: Run tests
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild test \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'platform=iOS Simulator,name=${{ env.DEVICE }},OS=${{ env.IOS_VERSION }}' \
+            -configuration Debug \
+            -derivedDataPath ../../DerivedData \
+            -resultBundlePath ../../TestResults \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults.xcresult
+          if-no-files-found: ignore
+
+  archive:
+    name: Archive (Development)
+    runs-on: macos-14
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_archive == true)
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      # ----------------------------------------------------------------
+      # Code signing – import Apple Development certificate & provisioning profile
+      # Required secrets (set in repo settings → secrets and variables → actions):
+      #   BUILD_CERTIFICATE_BASE64       – Base64-encoded .p12 (Development)
+      #   BUILD_CERTIFICATE_PASSWORD     – Password for the .p12
+      #   BUILD_PROVISIONING_PROFILE_B64 – Base64-encoded .mobileprovision
+      #   KEYCHAIN_PASSWORD              – Temporary keychain password (any value)
+      #   DEVELOPMENT_TEAM               – Apple Team ID (e.g. ABC123DEFG)
+      #   PROVISIONING_PROFILE_SPECIFIER – Profile name in Xcode (e.g. "iOS Dev Profile")
+      # ----------------------------------------------------------------
+      - name: Import code-signing certificate
+        env:
+          CERTIFICATE_PATH: /tmp/build_certificate.p12
+          KEYCHAIN_PATH: /tmp/ios-build.keychain
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "${{ secrets.BUILD_CERTIFICATE_BASE64 }}" | base64 --decode > "$CERTIFICATE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERTIFICATE_PATH" \
+            -P "${{ secrets.BUILD_CERTIFICATE_PASSWORD }}" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s \
+            "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          echo "✅ Certificate imported successfully"
+
+      - name: Import provisioning profile
+        run: |
+          PROFILE_PATH=/tmp/ios_build.mobileprovision
+          echo "${{ secrets.BUILD_PROVISIONING_PROFILE_B64 }}" | base64 --decode > "$PROFILE_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          UUID=$(grep -aA1 'UUID' "$PROFILE_PATH" | grep -oE '[A-F0-9-]{36}')
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+
+          echo "✅ Provisioning profile imported (UUID: $UUID)"
+
+      - name: Resolve package dependencies
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild -resolvePackageDependencies \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'generic/platform=iOS'
+
+      - name: Archive
+        run: |
+          cd ${{ env.PACKAGE_PATH }}
+          xcodebuild archive \
+            -scheme ${{ env.SCHEME }} \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath ${{ runner.temp }}/remotty-ios.xcarchive \
+            -derivedDataPath ../../DerivedData \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            DEVELOPMENT_TEAM="${{ secrets.DEVELOPMENT_TEAM }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROVISIONING_PROFILE_SPECIFIER }}"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: remotty-ios.xcarchive
+          path: ${{ runner.temp }}/remotty-ios.xcarchive
+          if-no-files-found: error
