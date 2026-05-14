@@ -1,0 +1,35 @@
+# remotty — Prometheus scrape configuration
+# =============================================
+# Scrapes metrics from remotty signal server and host daemon instances.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+scrape_configs:
+  # ─── remotty Signal Server ───────────────────────────────────────
+  - job_name: 'remotty-signal'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['remotty-signal:9090']
+        labels:
+          service: 'signal'
+          project: 'remotty'
+
+  # ─── remotty Host Daemon ──────────────────────────────────────────
+  - job_name: 'remotty-host'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['remotty-host:9091']
+        labels:
+          service: 'host'
+          project: 'remotty'
+
+  # ─── Prometheus itself ────────────────────────────────────────────
+  - job_name: 'prometheus'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9090']
