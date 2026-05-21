@@ -28,3 +28,34 @@ If no host ID is given, lists available hosts.`,
 		if v, _ := cmd.Flags().GetString("password"); v != "" {
 			cfg.MasterPassword = v
 		}
+
+		// Env overrides
+		if env := os.Getenv("REMOTTY_SIGNAL_URL"); env != "" && cfg.SignalURL == "" {
+			cfg.SignalURL = env
+		}
+		if env := os.Getenv("REMOTTY_MASTER_PASSWORD"); env != "" && cfg.MasterPassword == "" {
+			cfg.MasterPassword = env
+		}
+
+		// Positional arg = host ID
+		if len(args) > 0 {
+			cfg.HostID = args[0]
+		}
+
+		c, err := client.NewClient(cfg, log.Logger)
+		if err != nil {
+			return err
+		}
+
+		// List mode (no host specified)
+		if cfg.HostID == "" {
+			hosts, err := c.ListHosts()
+			if err != nil {
+				return fmt.Errorf("list hosts: %w", err)
+			}
+			if len(hosts) == 0 {
+				fmt.Println("No hosts available. Start a host with: remotty host")
+				return nil
+			}
+			fmt.Println("\nAvailable hosts:")
+			for _, h := range hosts {
