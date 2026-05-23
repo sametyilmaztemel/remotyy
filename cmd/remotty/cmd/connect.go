@@ -59,3 +59,33 @@ If no host ID is given, lists available hosts.`,
 			}
 			fmt.Println("\nAvailable hosts:")
 			for _, h := range hosts {
+				fmt.Printf("  %s — %s/%s [%s]\n",
+					h.Name, h.Platform, h.Arch, joinStrings(h.Features, ", "))
+			}
+			return nil
+		}
+
+		ctx, stop := gosignal.NotifyContext(context.Background(),
+			syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		return c.ConnectInteractive(ctx)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(connectCmd)
+	connectCmd.Flags().StringP("signal", "s", "ws://localhost:9000", "Signaling server URL")
+	connectCmd.Flags().StringP("password", "p", "", "Master password")
+}
+
+func joinStrings(s []string, sep string) string {
+	result := ""
+	for i, v := range s {
+		if i > 0 {
+			result += sep
+		}
+		result += v
+	}
+	return result
+}
