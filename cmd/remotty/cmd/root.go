@@ -51,3 +51,29 @@ func init() {
 
 func initConfig() {
 	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	globalCfg = cfg
+
+	if logLevel != "info" {
+		cfg.Logging.Level = logLevel
+	}
+	if logFormat != "console" {
+		cfg.Logging.Format = logFormat
+	}
+	if logFile != "" {
+		cfg.Logging.File = logFile
+	}
+}
+
+func initLogging() error {
+	l, err := logging.Init(globalCfg.Logging.ParseLevel(), globalCfg.Logging.Format, globalCfg.Logging.File)
+	if err != nil {
+		return fmt.Errorf("init logging: %w", err)
+	}
+	logger = l
+	log.Logger = l.Logger
+	return nil
+}
