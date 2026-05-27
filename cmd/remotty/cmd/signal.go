@@ -50,3 +50,29 @@ but never sees terminal or screen data.`,
 		}
 
 		server := signal.NewServer(cfg, logger)
+
+		ctx, stop := gosignal.NotifyContext(context.Background(),
+			syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		log.Info().
+			Str("version", config.Version).
+			Str("addr", cfg.Addr()).
+			Bool("tls", cfg.TLS.Enabled).
+			Bool("dev_mode", cfg.DevMode).
+			Msg("Signaling server starting")
+
+		return server.Start(ctx)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(signalCmd)
+	signalCmd.Flags().IntP("port", "p", 9000, "Signaling server port")
+	signalCmd.Flags().StringP("host", "H", "0.0.0.0", "Bind address")
+	signalCmd.Flags().Bool("dev", false, "Developer mode (no auth)")
+	signalCmd.Flags().Bool("tls", false, "Enable TLS")
+	signalCmd.Flags().String("tls-cert", "", "TLS certificate file")
+	signalCmd.Flags().String("tls-key", "", "TLS key file")
+	signalCmd.Flags().String("web-dir", "", "Web UI directory to serve (e.g. ./web/dist)")
+}
