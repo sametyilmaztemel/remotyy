@@ -24,3 +24,29 @@ but never sees terminal or screen data.`,
 		// CLI flags override config file
 		if v, _ := cmd.Flags().GetInt("port"); v != 0 {
 			cfg.Port = v
+		}
+		if v, _ := cmd.Flags().GetString("host"); v != "" {
+			cfg.Host = v
+		}
+		if v, _ := cmd.Flags().GetBool("dev"); v {
+			cfg.DevMode = v
+		}
+		if v, _ := cmd.Flags().GetBool("tls"); v {
+			cfg.TLS.Enabled = v
+		}
+		if v, _ := cmd.Flags().GetString("tls-cert"); v != "" {
+			cfg.TLS.CertFile = v
+		}
+		if v, _ := cmd.Flags().GetString("tls-key"); v != "" {
+			cfg.TLS.KeyFile = v
+		}
+		if v, _ := cmd.Flags().GetString("web-dir"); v != "" {
+			cfg.WebDir = v
+		}
+
+		// Env overrides
+		if authToken := os.Getenv("REMOTTY_AUTH_TOKEN"); authToken != "" {
+			cfg.AuthToken = authToken
+		}
+
+		server := signal.NewServer(cfg, logger)
