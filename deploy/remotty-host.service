@@ -1,0 +1,24 @@
+[Unit]
+Description=Remotty Host Daemon
+After=network.target remotty-signal.service
+Wants=remotty-signal.service
+BindsTo=remotty-signal.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/remotty
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/local/bin/remotty host --signal ws://localhost:9010 --name arm-oracle
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+# Security
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/remotty
+
+[Install]
+WantedBy=multi-user.target
