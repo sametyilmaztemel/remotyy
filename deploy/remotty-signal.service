@@ -1,0 +1,22 @@
+[Unit]
+Description=Remotty Signaling Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/remotty
+ExecStart=/home/ubuntu/remotty/remotty-signal signal --port 9010
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/remotty
+
+[Install]
+WantedBy=multi-user.target
