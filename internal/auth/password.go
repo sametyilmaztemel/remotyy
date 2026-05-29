@@ -38,3 +38,23 @@ func HashPasswordArgon2(password string) (string, error) {
 }
 
 // GenerateToken creates a random authentication token.
+func GenerateToken(length int) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// ValidateDeviceID checks if a device ID matches the allow list.
+func ValidateDeviceID(deviceID string, allowList []string) bool {
+	if len(allowList) == 0 {
+		return true // no allow list = allow all
+	}
+	for _, id := range allowList {
+		if id == deviceID || id == "*" {
+			return true
+		}
+	}
+	return false
+}
