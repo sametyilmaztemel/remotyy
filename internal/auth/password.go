@@ -18,3 +18,23 @@ func HashPassword(password string) (string, error) {
 	}
 	return string(bytes), nil
 }
+
+// CheckPassword compares a password against a bcrypt hash.
+func CheckPassword(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+// HashPasswordArgon2 creates an Argon2id hash.
+func HashPasswordArgon2(password string) (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("generate salt: %w", err)
+	}
+
+	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+	return fmt.Sprintf("$argon2id$v=19$m=65536,t=1,p=4$%s$%s",
+		hex.EncodeToString(salt), hex.EncodeToString(hash)), nil
+}
+
+// GenerateToken creates a random authentication token.
