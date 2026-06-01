@@ -101,3 +101,106 @@ func Create(dataDir string, configPath string) (string, error) {
 				return nil // skip inaccessible files
 			}
 			// Skip the backup directory itself
+			rel, err := filepath.Rel(dataDir, path)
+			if err != nil {
+				return nil
+			}
+			if rel == BackupDirName || strings.HasPrefix(rel, BackupDirName+string(filepath.Separator)) {
+				if rel != BackupDirName {
+					return nil // skip backup files
+				}
+				return filepath.SkipDir
+			}
+			// Skip the backup file we're creating
+			if path == backupPath {
+				return nil
+			}
+			if info.IsDir() {
+				return nil // tar handles directories via their contents
+			}
+			tarPath := "data/" + rel
+			if err := addFileToTar(tw, path, tarPath); err != nil {
+				return err
+			}
+			added = true
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("walk data dir for backup: %w", err)
+		}
+	}
+
+	if !added {
+		os.Remove(backupPath)
+		return "", fmt.Errorf("nothing to backup (no config or data files found)")
+	}
+
+	return backupPath, nil
+}
+
+// Restore restores a backup from the given backup file into the specified directory.
+// backupPath is the path to the .tar.gz backup file.
+// targetDir is the directory to restore into.
+func Restore(backupPath string, targetDir string) error {
+	f, err := os.Open(backupPath)
+	if err != nil {
+		return fmt.Errorf("open backup: %w", err)
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("read gzip: %w", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+
+		// Determine target path
+		var targetPath string
+		switch {
+		case header.Name == "config.yaml":
+			targetPath = filepath.Join(targetDir, "remotty.yaml")
+		case strings.HasPrefix(header.Name, "data/"):
+			relPath := strings.TrimPrefix(header.Name, "data/")
+			targetPath = filepath.Join(targetDir, relPath)
+		default:
+			targetPath = filepath.Join(targetDir, header.Name)
+		}
+
+		// Security: prevent path traversal
+		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(targetDir)) {
+			return fmt.Errorf("path traversal detected: %s", header.Name)
+		}
+
+		if header.Typeflag == tar.TypeDir {
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("create dir %s: %w", targetPath, err)
+			}
+			continue
+		}
+
+		// Create parent directories
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
+			return fmt.Errorf("create parent dirs for %s: %w", targetPath, err)
+		}
+
+		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+		if err != nil {
+			return fmt.Errorf("create file %s: %w", targetPath, err)
+		}
+
+		if _, err := io.Copy(outFile, tr); err != nil {
+			outFile.Close()
+			return fmt.Errorf("write file %s: %w", targetPath, err)
+		}
+		outFile.Close()
