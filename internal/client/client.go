@@ -190,3 +190,100 @@ func (c *Client) ConnectInteractive(ctx context.Context) error {
 			}
 		}
 	}()
+
+	// Monitor terminal resize (SIGWINCH) and send MsgResize events
+	var lastRows, lastCols int
+	lastRows, lastCols = height, width
+	resizeCh := make(chan os.Signal, 1)
+	gosignal.Notify(resizeCh, syscall.SIGWINCH)
+	defer gosignal.Stop(resizeCh)
+
+	var resizeMu sync.Mutex
+	go func() {
+		for range resizeCh {
+			w, h, err := term.GetSize(0)
+			if err != nil {
+				continue
+			}
+			resizeMu.Lock()
+			if w == lastCols && h == lastRows {
+				resizeMu.Unlock()
+				continue
+			}
+			lastCols, lastRows = w, h
+			resizeMu.Unlock()
+
+			c.log.Debug().
+				Int("rows", h).Int("cols", w).
+				Msg("Terminal resized, sending resize event")
+			terminalDC.SendJSON(protocol.NewMessage(protocol.MsgResize, protocol.ResizePayload{
+				Rows: uint16(h),
+				Cols: uint16(w),
+			}))
+		}
+	}()
+
+	// Write received data to stdout
+	done := make(chan struct{})
+
+	terminalDC.OnMessage(func(data []byte) {
+		os.Stdout.Write(data)
+	})
+
+	authDC.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		json.Unmarshal(data, &msg)
+		if msg.Type == protocol.MsgAuthOK {
+			fmt.Println("\r✅ Authenticated successfully")
+		} else if msg.Type == protocol.MsgAuthFail {
+			fmt.Println("\r❌ Authentication failed")
+			close(done)
+		}
+	})
+
+	// Handle transfer data channel messages (file transfer progress/errors)
+	transferDC.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgFileProgress:
+			var progress protocol.FileProgressPayload
+			if err := json.Unmarshal(msg.Payload, &progress); err != nil {
+				return
+			}
+			fmt.Printf("\r📦 Transfer %s: %d/%d bytes",
+				progress.TransferID, progress.BytesSent, progress.TotalBytes)
+
+		case protocol.MsgFileComplete:
+			var complete protocol.FileTransferCompletePayload
+			if err := json.Unmarshal(msg.Payload, &complete); err != nil {
+				return
+			}
+			fmt.Printf("\r✅ Transfer %s complete: %d bytes\n",
+				complete.TransferID, complete.Size)
+
+		case protocol.MsgFileError:
+			var errPayload protocol.FileTransferErrorPayload
+			if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+				return
+			}
+			fmt.Printf("\r❌ Transfer %s error [%s]: %s\n",
+				errPayload.TransferID, errPayload.Code, errPayload.Message)
+
+		case protocol.MsgFileAccept:
+			var acceptPayload struct {
+				TransferID string `json:"transfer_id"`
+			}
+			if err := json.Unmarshal(msg.Payload, &acceptPayload); err != nil {
+				return
+			}
+			fmt.Printf("\r✅ Transfer %s accepted by host\n", acceptPayload.TransferID)
+		}
+	})
+
+	<-done
+	return nil
+}
