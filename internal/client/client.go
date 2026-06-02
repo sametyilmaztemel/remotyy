@@ -94,3 +94,99 @@ func (c *Client) ConnectInteractive(ctx context.Context) error {
 		json.Unmarshal(msg.Payload, &errPayload)
 		return fmt.Errorf("connection rejected: %s", errPayload.Message)
 	}
+
+	if msg.Type != protocol.MsgRoomReady {
+		return fmt.Errorf("unexpected message: %s", msg.Type)
+	}
+
+	c.log.Info().Msg("Room ready, starting WebRTC negotiation")
+
+	// Capture room info
+	var roomInfo struct {
+		Room   string            `json:"room"`
+		HostID string            `json:"host_id"`
+		Host   protocol.HostInfo `json:"host"`
+	}
+	json.Unmarshal(msg.Payload, &roomInfo)
+
+	// Create WebRTC engine
+	engine, err := webrtc.NewEngine(func(cfg *webrtc.EngineConfig) {
+		cfg.SignalConn = webrtc.NewSafeConn(conn)
+		cfg.RoomID = roomInfo.Room
+		cfg.ICEServers = []string{"stun:stun.l.google.com:19302"}
+	})
+	if err != nil {
+		return fmt.Errorf("create webrtc engine: %w", err)
+	}
+	c.webrtcEng = engine
+
+	// Read signaling messages in background
+	go func() {
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var sigMsg protocol.Message
+			json.Unmarshal(data, &sigMsg)
+
+			switch sigMsg.Type {
+			case protocol.MsgOffer:
+				engine.HandleOffer(sigMsg)
+			case protocol.MsgICECandidate:
+				engine.HandleICE(sigMsg)
+			}
+		}
+	}()
+
+	// Wait for offer from host
+	// The host sends the offer after we request connection
+	// For now, the host initiates the offer on MsgConnect
+
+	fmt.Println("\n🔗 Connected! Starting interactive terminal...")
+	fmt.Println("   NOTE: Run in a real terminal for full TTY support.")
+	fmt.Println("Press Ctrl+Q to disconnect.")
+
+	// Terminal setup
+	oldState, err := term.MakeRaw(0)
+	if err != nil {
+		return fmt.Errorf("make raw terminal: %w", err)
+	}
+	defer term.Restore(0, oldState)
+
+	// Get terminal size
+	width, height, err := term.GetSize(0)
+	if err != nil {
+		width, height = 80, 24
+	}
+
+	terminalDC := engine.CreateDataChannel("terminal")
+	authDC := engine.CreateDataChannel("auth")
+	transferDC := engine.CreateDataChannel("transfer")
+
+	// Send auth if password provided
+	if c.cfg.MasterPassword != "" {
+		authDC.SendJSON(protocol.NewMessage(protocol.MsgAuth, protocol.AuthPayload{
+			Password: c.cfg.MasterPassword,
+		}))
+	}
+
+	// Send initial resize
+	terminalDC.SendJSON(protocol.NewMessage(protocol.MsgResize, protocol.ResizePayload{
+		Rows: uint16(height),
+		Cols: uint16(width),
+	}))
+
+	// Read from terminal and send to WebRTC
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			if n > 0 {
+				terminalDC.Send(buf[:n])
+			}
+		}
+	}()
