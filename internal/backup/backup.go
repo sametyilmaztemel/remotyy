@@ -204,3 +204,106 @@ func Restore(backupPath string, targetDir string) error {
 			return fmt.Errorf("write file %s: %w", targetPath, err)
 		}
 		outFile.Close()
+	}
+
+	return nil
+}
+
+// List returns all available backups for the given data directory.
+func List(dataDir string) ([]Entry, error) {
+	backupDir := filepath.Join(dataDir, BackupDirName)
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Entry{}, nil
+		}
+		return nil, fmt.Errorf("read backup dir: %w", err)
+	}
+
+	var backups []Entry
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "remotty_backup_") || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		backups = append(backups, Entry{
+			Path:    filepath.Join(backupDir, entry.Name()),
+			Name:    entry.Name(),
+			Size:    info.Size(),
+			Created: info.ModTime(),
+		})
+	}
+
+	// Sort by creation time, newest first
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].Created.After(backups[j].Created)
+	})
+
+	return backups, nil
+}
+
+// Cleanup removes old backups, keeping at most `maxKeep` most recent ones
+// and removing any older than `maxAge`.
+func Cleanup(dataDir string, maxKeep int, maxAge time.Duration) (int, error) {
+	backups, err := List(dataDir)
+	if err != nil {
+		return 0, err
+	}
+
+	if maxKeep <= 0 {
+		maxKeep = MaxBackups
+	}
+	if maxAge <= 0 {
+		maxAge = MaxBackupAge
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+
+	for i, b := range backups {
+		// Remove if too old or beyond the retention count
+		if i >= maxKeep || b.Created.Before(cutoff) {
+			if err := os.Remove(b.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to remove old backup %s: %v\n", b.Path, err)
+				continue
+			}
+			removed++
+		}
+	}
+
+	return removed, nil
+}
+
+// addFileToTar adds a single file to the tar writer.
+func addFileToTar(tw *tar.Writer, sourcePath string, tarPath string) error {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	header, err := tar.FileInfoHeader(info, "")
+	if err != nil {
+		return err
+	}
+	header.Name = tarPath
+	header.Format = tar.FormatPAX
+
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(tw, f)
+	return err
+}
