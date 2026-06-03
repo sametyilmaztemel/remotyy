@@ -130,3 +130,135 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("host.session_timeout", DefaultSessionTimeout)
 	v.SetDefault("host.max_sessions", 0) // 0 = unlimited
 	v.SetDefault("host.features", []string{"terminal"})
+	v.SetDefault("webrtc.ice_servers", []string{DefaultSTUNServer})
+	v.SetDefault("webrtc.mdns", true)
+	v.SetDefault("webrtc.ice_timeout", 10)
+	v.SetDefault("webrtc.max_message_size", 65536)
+	v.SetDefault("logging.level", DefaultLogLevel)
+	v.SetDefault("logging.format", "console")
+	v.SetDefault("screen.enabled", false)
+	v.SetDefault("screen.fps", 15)
+	v.SetDefault("screen.quality", 60)
+	v.SetDefault("screen.max_dimension", 1920)
+	v.SetDefault("screen.capture_cursor", false)
+
+	// Env bindings
+	envBindings := map[string]string{
+		"signal.auth_token":    "REMOTTY_AUTH_TOKEN",
+		"host.signal_url":     "REMOTTY_SIGNAL_URL",
+		"host.master_password":"REMOTTY_MASTER_PASSWORD",
+		"host.name":           "REMOTTY_HOST_NAME",
+		"host.device_id":      "REMOTTY_DEVICE_ID",
+		"client.signal_url":   "REMOTTY_SIGNAL_URL",
+		"client.master_password":"REMOTTY_MASTER_PASSWORD",
+		"signal.tls.cert_file":"REMOTTY_TLS_CERT",
+		"signal.tls.key_file": "REMOTTY_TLS_KEY",
+		"logging.level":       "REMOTTY_LOG_LEVEL",
+		"logging.file":        "REMOTTY_LOG_FILE",
+	}
+	for key, env := range envBindings {
+		v.MustBindEnv(key, env)
+	}
+
+	// Config file
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+	} else {
+		v.SetConfigName("remotty")
+		v.SetConfigType("yaml")
+		v.AddConfigPath(".")
+		v.AddConfigPath("$HOME/.remotty")
+		v.AddConfigPath("/etc/remotty")
+	}
+
+	// Read config
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
+	}
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	// Post-processing
+	if cfg.Host.Name == "" {
+		cfg.Host.Name, _ = os.Hostname()
+	}
+
+	return &cfg, nil
+}
+
+// SignalAddr returns the full signal server address.
+func (s *SignalConfig) Addr() string {
+	return fmt.Sprintf("%s:%d", s.Host, s.Port)
+}
+
+// WSSAddr returns the WebSocket URL.
+func (s *SignalConfig) WSSAddr() string {
+	scheme := "ws"
+	if s.TLS.Enabled {
+		scheme = "wss"
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, s.Host, s.Port)
+}
+
+// ParseLevel converts log level string to zerolog.Level.
+func (l *LoggingConfig) ParseLevel() zerolog.Level {
+	switch strings.ToLower(l.Level) {
+	case "debug":
+		return zerolog.DebugLevel
+	case "info":
+		return zerolog.InfoLevel
+	case "warn":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	default:
+		return zerolog.InfoLevel
+	}
+}
+
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/remotty"
+	}
+	return filepath.Join(home, ".remotty")
+}
+
+// Validate checks the config for common issues.
+func (c *Config) Validate() error {
+	var errs []string
+
+	// Global
+	if c.Global.DataDir != "" {
+		// Ensure data dir path is absolute
+		if !filepath.IsAbs(c.Global.DataDir) {
+			errs = append(errs, "global.data_dir must be an absolute path")
+		}
+	}
+
+	// Signal server
+	if c.Signal.Port < 0 || c.Signal.Port > 65535 {
+		errs = append(errs, "signal.port must be 0-65535")
+	}
+	if c.Signal.Port == 0 && !c.Signal.DevMode {
+		errs = append(errs, "signal.port must be > 0 when dev_mode is false")
+	}
+	if c.Signal.RateLimit < 0 {
+		errs = append(errs, "signal.rate_limit must be >= 0")
+	}
+	if c.Signal.TLS.Enabled {
+		if c.Signal.TLS.CertFile == "" {
+			errs = append(errs, "signal.tls.cert_file is required when TLS enabled")
+		}
+		if c.Signal.TLS.KeyFile == "" {
+			errs = append(errs, "signal.tls.key_file is required when TLS enabled")
+		}
+	}
+	// Validate allowed origins
+	for i, origin := range c.Signal.AllowedOrigins {
+		if origin != "*" && !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
