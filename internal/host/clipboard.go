@@ -168,3 +168,88 @@ func clipboardReadCmd() *exec.Cmd {
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("pbpaste")
+	case "linux":
+		return linuxReadCmd()
+	default:
+		return nil
+	}
+}
+
+// clipboardWriteCmd returns the platform-specific command to write clipboard.
+// Supports: macOS (pbcopy), Linux (wl-copy, xclip, xsel).
+func clipboardWriteCmd() *exec.Cmd {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("pbcopy")
+	case "linux":
+		return linuxWriteCmd()
+	default:
+		return nil
+	}
+}
+
+// linuxReadCmd detects the available clipboard tool on Linux and returns
+// the appropriate command. Priority: wl-paste (Wayland) > xclip > xsel.
+func linuxReadCmd() *exec.Cmd {
+	if toolExists("wl-paste") {
+		return exec.Command("wl-paste", "--no-newline")
+	}
+	if toolExists("xclip") {
+		return exec.Command("xclip", "-o", "-selection", "clipboard")
+	}
+	if toolExists("xsel") {
+		return exec.Command("xsel", "--clipboard", "--output")
+	}
+	return nil
+}
+
+// linuxWriteCmd detects the available clipboard tool on Linux and returns
+// the appropriate command. Priority: wl-copy (Wayland) > xclip > xsel.
+func linuxWriteCmd() *exec.Cmd {
+	if toolExists("wl-copy") {
+		return exec.Command("wl-copy")
+	}
+	if toolExists("xclip") {
+		return exec.Command("xclip", "-i", "-selection", "clipboard")
+	}
+	if toolExists("xsel") {
+		return exec.Command("xsel", "--clipboard", "--input")
+	}
+	return nil
+}
+
+// toolExists checks whether the given executable is available in PATH.
+func toolExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// handleClipboardData processes a MsgClipboardData received from the client.
+func (d *Daemon) handleClipboardData(dc *webrtc.DataChannel, msg protocol.Message) {
+	var payload protocol.ClipboardData
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		d.log.Warn().Err(err).Msg("Invalid clipboard data payload")
+		return
+	}
+
+	d.log.Debug().Int("len", len(payload.ClipboardText)).Msg("Received clipboard data from client")
+
+	// Write to local system clipboard
+	if d.clipMon != nil {
+		if err := d.clipMon.Set(payload.ClipboardText); err != nil {
+			d.log.Warn().Err(err).Msg("Failed to write clipboard data")
+		}
+	}
+}
+
+// sendClipboardUpdate sends current clipboard content to the client.
+func (d *Daemon) sendClipboardUpdate(dc *webrtc.DataChannel, text string) {
+	payload := protocol.ClipboardData{
+		ClipboardText: text,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	msg := protocol.NewMessage(protocol.MsgClipboardData, payload)
+	if err := dc.SendJSON(msg); err != nil {
+		d.log.Warn().Err(err).Msg("Failed to send clipboard data")
+	}
+}
