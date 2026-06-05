@@ -83,3 +83,88 @@ func (m *ClipboardMonitor) Stop() {
 }
 
 // Get returns the current clipboard content.
+func (m *ClipboardMonitor) Get() (string, error) {
+	return readClipboard()
+}
+
+// Set writes text to the system clipboard and updates the last known content.
+func (m *ClipboardMonitor) Set(text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := writeClipboard(text); err != nil {
+		return err
+	}
+	m.lastContent = text
+	return nil
+}
+
+// pollLoop periodically checks clipboard for changes.
+func (m *ClipboardMonitor) pollLoop() {
+	ticker := time.NewTicker(clipboardPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			m.checkClipboard()
+		}
+	}
+}
+
+// checkClipboard reads the clipboard and fires onChange if it changed.
+func (m *ClipboardMonitor) checkClipboard() {
+	content, err := readClipboard()
+	if err != nil {
+		return
+	}
+
+	m.mu.Lock()
+	hasChanged := content != m.lastContent && content != ""
+	if hasChanged {
+		m.lastContent = content
+	}
+	onChange := m.onChange
+	m.mu.Unlock()
+
+	if hasChanged && onChange != nil {
+		m.log.Debug().Int("len", len(content)).Msg("Clipboard content changed")
+		onChange(content)
+	}
+}
+
+// readClipboard reads the system clipboard using platform-specific tools.
+func readClipboard() (string, error) {
+	cmd := clipboardReadCmd()
+	if cmd == nil {
+		return "", fmt.Errorf("clipboard read not supported on this platform")
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("read clipboard: %w", err)
+	}
+	return strings.TrimRight(out.String(), "\n\r"), nil
+}
+
+// writeClipboard writes text to the system clipboard.
+func writeClipboard(text string) error {
+	cmd := clipboardWriteCmd()
+	if cmd == nil {
+		return fmt.Errorf("clipboard write not supported on this platform")
+	}
+	cmd.Stdin = strings.NewReader(text)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("write clipboard: %w", err)
+	}
+	return nil
+}
+
+// clipboardReadCmd returns the platform-specific command to read clipboard.
+// Supports: macOS (pbpaste), Linux (wl-paste, xclip, xsel).
+func clipboardReadCmd() *exec.Cmd {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("pbpaste")
