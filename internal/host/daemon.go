@@ -767,3 +767,387 @@ func (d *Daemon) handleTransferChannel(session *Session, dc *webrtc.DataChannel)
 
 		case protocol.MsgFileCancel:
 			var cancelPayload struct {
+				TransferID string `json:"transfer_id"`
+			}
+			if err := json.Unmarshal(msg.Payload, &cancelPayload); err != nil {
+				return
+			}
+			t := d.transferMgr.Get(cancelPayload.TransferID)
+			if t != nil {
+				t.Cancel()
+				d.log.Info().Str("transfer_id", cancelPayload.TransferID).Msg("File transfer cancelled")
+			}
+
+		case protocol.MsgFileError:
+			var errPayload protocol.FileTransferErrorPayload
+			if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+				return
+			}
+			t := d.transferMgr.Get(errPayload.TransferID)
+			if t != nil {
+				t.Cancel()
+			}
+			d.log.Warn().
+				Str("transfer_id", errPayload.TransferID).
+				Str("code", errPayload.Code).
+				Str("message", errPayload.Message).
+				Msg("File transfer error from client")
+		}
+	})
+}
+
+func (d *Daemon) handleFileChannel(session *Session, dc *webrtc.DataChannel) {
+	if !session.Authed {
+		dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Not authenticated"))
+		return
+	}
+
+	d.log.Info().Str("label", "file").Msg("File channel handler initialized")
+
+	dc.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			d.log.Warn().Err(err).Msg("Failed to unmarshal file channel message")
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgFileRequest:
+			var req protocol.FileRequestPayload
+			if err := json.Unmarshal(msg.Payload, &req); err != nil {
+				d.log.Warn().Err(err).Msg("Failed to unmarshal file request")
+				return
+			}
+
+			// Initiate receive via transfer manager
+			t, err := d.transferMgr.InitiateReceive(req)
+			if err != nil {
+				d.log.Error().Err(err).Msg("Failed to initiate file receive")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgFileError,
+					protocol.FileTransferErrorPayload{
+						TransferID: req.TransferID,
+						Code:       "init_failed",
+						Message:    err.Error(),
+					}))
+				return
+			}
+
+			d.log.Info().
+				Str("transfer_id", t.ID).
+				Str("name", t.Name).
+				Int64("size", t.Size).
+				Msg("Incoming file transfer, auto-accepting")
+
+			// Auto-accept the transfer
+			dc.SendJSON(protocol.NewMessage(protocol.MsgFileAccept, map[string]interface{}{
+				"transfer_id": req.TransferID,
+			}))
+
+		case protocol.MsgFileChunk:
+			var chunk protocol.FileChunkPayload
+			if err := json.Unmarshal(msg.Payload, &chunk); err != nil {
+				d.log.Warn().Err(err).Msg("Failed to unmarshal file chunk")
+				return
+			}
+
+			// Decode base64 data if needed (Data is []byte, JSON auto-decodes,
+			// but some clients may send base64 string that needs explicit handling)
+			if len(chunk.Data) > 0 {
+				// Check if the data looks like a base64 string (ASCII printable range)
+				decoded, err := base64.StdEncoding.DecodeString(string(chunk.Data))
+				if err == nil && len(decoded) > 0 {
+					chunk.Data = decoded
+				}
+			}
+
+			t := d.transferMgr.Get(chunk.TransferID)
+			if t == nil {
+				d.log.Warn().Str("transfer_id", chunk.TransferID).Msg("Unknown transfer for chunk")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgFileError,
+					protocol.FileTransferErrorPayload{
+						TransferID: chunk.TransferID,
+						Code:       "unknown_transfer",
+						Message:    "No active transfer with this ID",
+					}))
+				return
+			}
+
+			if err := t.WriteChunk(chunk.Index, chunk.Data, chunk.Checksum); err != nil {
+				d.log.Error().Err(err).
+					Str("transfer_id", chunk.TransferID).
+					Int("chunk", chunk.Index).
+					Msg("Failed to write chunk")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgFileError,
+					protocol.FileTransferErrorPayload{
+						TransferID: chunk.TransferID,
+						Code:       "write_failed",
+						Message:    err.Error(),
+					}))
+				return
+			}
+
+			// Report progress
+			dc.SendJSON(protocol.NewMessage(protocol.MsgFileProgress,
+				protocol.FileProgressPayload{
+					TransferID: chunk.TransferID,
+					BytesSent:  t.BytesSent,
+					TotalBytes: t.Size,
+				}))
+
+		case protocol.MsgFileComplete:
+			var complete protocol.FileTransferCompletePayload
+			if err := json.Unmarshal(msg.Payload, &complete); err != nil {
+				d.log.Warn().Err(err).Msg("Failed to unmarshal file complete")
+				return
+			}
+
+			t := d.transferMgr.Get(complete.TransferID)
+			if t == nil {
+				d.log.Warn().Str("transfer_id", complete.TransferID).Msg("Unknown transfer for completion")
+				return
+			}
+			t.Complete()
+
+			d.log.Info().
+				Str("name", t.Name).
+				Str("path", t.Path).
+				Int64("size", complete.Size).
+				Msg("File transfer completed")
+
+		case protocol.MsgFileCancel:
+			var cancelPayload struct {
+				TransferID string `json:"transfer_id"`
+			}
+			if err := json.Unmarshal(msg.Payload, &cancelPayload); err != nil {
+				d.log.Warn().Err(err).Msg("Failed to unmarshal file cancel")
+				return
+			}
+			t := d.transferMgr.Get(cancelPayload.TransferID)
+			if t != nil {
+				t.Cancel()
+				d.log.Info().
+					Str("transfer_id", cancelPayload.TransferID).
+					Msg("File transfer cancelled by peer")
+			}
+
+		case protocol.MsgFileError:
+			var errPayload protocol.FileTransferErrorPayload
+			if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+				d.log.Warn().Err(err).Msg("Failed to unmarshal file error")
+				return
+			}
+			t := d.transferMgr.Get(errPayload.TransferID)
+			if t != nil {
+				t.Cancel()
+			}
+			d.log.Warn().
+				Str("transfer_id", errPayload.TransferID).
+				Str("code", errPayload.Code).
+				Str("message", errPayload.Message).
+				Msg("File transfer error from peer")
+		}
+	})
+}
+
+func (d *Daemon) handleClipboardChannel(session *Session, dc *webrtc.DataChannel) {
+	// Start clipboard monitoring when the clipboard channel opens
+	if d.clipMon == nil {
+		d.clipMon = NewClipboardMonitor(d.log)
+	}
+
+	// Start the monitor
+	if err := d.clipMon.Start(); err != nil {
+		d.log.Warn().Err(err).Msg("Failed to start clipboard monitor")
+		return
+	}
+
+	// Register callback for host-to-client clipboard changes
+	d.clipMon.OnChange(func(text string) {
+		d.sendClipboardUpdate(dc, text)
+	})
+
+	// Send initial clipboard content to client
+	if content, err := d.clipMon.Get(); err == nil && content != "" {
+		d.sendClipboardUpdate(dc, content)
+	}
+
+	// Handle incoming messages from client
+	dc.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgClipboardData:
+			d.handleClipboardData(dc, msg)
+		case protocol.MsgClipboardRequest:
+			// Respond with current clipboard content
+			if content, err := d.clipMon.Get(); err == nil && content != "" {
+				d.sendClipboardUpdate(dc, content)
+			}
+		}
+	})
+
+	d.log.Info().Msg("Clipboard channel initialized")
+}
+
+func (d *Daemon) handlePeerDisconnect(msg protocol.Message) {
+	var payload struct {
+		PeerID string `json:"peer_id"`
+	}
+	json.Unmarshal(msg.Payload, &payload)
+
+	d.mu.Lock()
+	for id, sess := range d.sessions {
+		if sess.ClientID == payload.PeerID {
+			if sess.WebRTC != nil {
+				sess.WebRTC.Close()
+			}
+			d.cleanupSessionLocked(id, sess)
+		}
+	}
+	d.mu.Unlock()
+
+	d.log.Info().Str("peer", payload.PeerID).Msg("Client disconnected")
+}
+
+// cleanupSession removes and cleans up a single session by room ID.
+func (d *Daemon) cleanupSession(roomID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sess, ok := d.sessions[roomID]
+	if !ok {
+		return
+	}
+	d.cleanupSessionLocked(roomID, sess)
+}
+
+// cleanupSessionLocked removes and cleans up a session (caller must hold d.mu).
+func (d *Daemon) cleanupSessionLocked(roomID string, sess *Session) {
+	if sess.PTYSess != nil {
+		sess.PTYSess.Close()
+	}
+	if sess.ScreenStreamer != nil {
+		sess.ScreenStreamer.Stop()
+	}
+	if sess.WebRTC != nil {
+		sess.WebRTC.Close()
+	}
+	delete(d.sessions, roomID)
+	d.log.Info().Str("room", roomID).Msg("Session cleaned up")
+}
+
+func (d *Daemon) handleError(msg protocol.Message) {
+	var err protocol.ErrorPayload
+	json.Unmarshal(msg.Payload, &err)
+	d.log.Warn().Str("error", err.Message).Msg("Received error from signal server")
+}
+
+func (d *Daemon) getSession(roomID string) *Session {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.sessions[roomID]
+}
+
+// sendError sends an error message back to the signal server.
+func (d *Daemon) sendError(roomID string, code int, message string) {
+	if d.signalConn != nil {
+		d.signalConn.WriteJSON(protocol.NewMessage(protocol.MsgError, protocol.ErrorPayload{
+			Code:    code,
+			Message: message,
+		}))
+	}
+}
+
+// APIResponse is the JSON envelope for local API responses.
+type APIResponse struct {
+	Success  bool           `json:"success"`
+	Sessions []APISession   `json:"sessions,omitempty"`
+	Error    string         `json:"error,omitempty"`
+}
+
+// APISession is the public session representation for the local API.
+type APISession struct {
+	ID        string `json:"id"`
+	ClientID  string `json:"client_id"`
+	CreatedAt string `json:"created_at"`
+	Duration  string `json:"duration"`
+	Authed    bool   `json:"authed"`
+}
+
+// startLocalAPI starts a local HTTP server on 127.0.0.1:9876 for the macOS menu bar app.
+func (d *Daemon) startLocalAPI() {
+	d.localAPIOnce.Do(func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/sessions", d.handleSessionsAPI)
+
+		d.localAPI = &http.Server{
+			Addr:    "127.0.0.1:9876",
+			Handler: mux,
+		}
+
+		listener, err := net.Listen("tcp", "127.0.0.1:9876")
+		if err != nil {
+			d.log.Warn().Err(err).Msg("Failed to start local API server (port 9876 may be in use)")
+			return
+		}
+
+		go func() {
+			d.log.Info().Msg("Local API server listening on 127.0.0.1:9876")
+			if err := d.localAPI.Serve(listener); err != nil && err != http.ErrServerClosed {
+				d.log.Warn().Err(err).Msg("Local API server stopped")
+			}
+		}()
+	})
+}
+
+func (d *Daemon) handleSessionsAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	d.mu.RLock()
+	apiSessions := make([]APISession, 0, len(d.sessions))
+	for _, sess := range d.sessions {
+		dur := time.Since(sess.CreatedAt)
+		apiSessions = append(apiSessions, APISession{
+			ID:        sess.ID,
+			ClientID:  sess.ClientID,
+			CreatedAt: sess.CreatedAt.Format(time.RFC3339),
+			Duration:  fmt.Sprintf("%dm%ds", int(dur.Minutes()), int(dur.Seconds())%60),
+			Authed:    sess.Authed,
+		})
+	}
+	d.mu.RUnlock()
+
+	resp := APIResponse{Success: true, Sessions: apiSessions}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (d *Daemon) cleanup() {
+	d.log.Info().Msg("Cleaning up host daemon")
+
+	// Stop clipboard monitor
+	if d.clipMon != nil {
+		d.clipMon.Stop()
+	}
+
+	// Shutdown local API server
+	if d.localAPI != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := d.localAPI.Shutdown(ctx); err != nil {
+			d.log.Warn().Err(err).Msg("Local API shutdown error")
+		}
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for id, sess := range d.sessions {
+		d.cleanupSessionLocked(id, sess)
+	}
+
+	if d.signalConn != nil {
+		d.signalConn.Close()
+	}
+}
