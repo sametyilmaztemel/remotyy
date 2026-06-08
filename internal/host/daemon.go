@@ -382,3 +382,388 @@ func (d *Daemon) handleConnectRequest(msg protocol.Message) {
 
 	d.mu.Lock()
 	d.sessions[payload.Room] = session
+	d.mu.Unlock()
+
+	// Create data channels BEFORE the offer so they're included in the SDP.
+	// The browser/client receives them via OnDataChannel.
+	engine.CreateDataChannel(webrtc.DataChannelAuth)
+	engine.CreateDataChannel(webrtc.DataChannelTerminal)
+	engine.CreateDataChannel(webrtc.DataChannelScreen)
+	engine.CreateDataChannel(webrtc.DataChannelTransfer)
+	engine.CreateDataChannel(webrtc.DataChannelClipboard)
+	engine.CreateDataChannel(webrtc.DataChannelFile)
+	d.log.Debug().Str("room", payload.Room).Msg("Data channels created on engine")
+
+	// Create and send WebRTC offer
+	offer, err := engine.CreateOffer()
+	if err != nil {
+		d.log.Error().Err(err).Msg("Failed to create WebRTC offer")
+		return
+	}
+
+	offerMsg := protocol.NewMessage(protocol.MsgOffer, offer)
+	offerMsg.Room = payload.Room
+	d.signalConn.WriteJSON(offerMsg)
+	d.log.Debug().Str("room", payload.Room).Msg("WebRTC offer sent")
+}
+
+func (d *Daemon) onDataChannel(roomID string) func(*webrtc.DataChannel, string) {
+	return func(dc *webrtc.DataChannel, label string) {
+		d.log.Info().Str("label", label).Str("room", roomID).
+			Msg("Data channel opened")
+
+		session := d.getSession(roomID)
+		if session == nil {
+			return
+		}
+
+		switch label {
+		case "auth":
+			d.handleAuthChannel(session, dc)
+		case "terminal":
+			d.handleTerminalChannel(session, dc)
+		case "screen":
+			d.handleScreenChannel(session, dc)
+		case "transfer":
+			d.handleTransferChannel(session, dc)
+		case "file":
+			d.handleFileChannel(session, dc)
+		case "clipboard":
+			d.handleClipboardChannel(session, dc)
+		}
+	}
+}
+
+func (d *Daemon) handleAuthChannel(session *Session, dc *webrtc.DataChannel) {
+	dc.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+
+		if msg.Type == protocol.MsgAuth {
+			var authPayload protocol.AuthPayload
+			json.Unmarshal(msg.Payload, &authPayload)
+
+			valid := d.cfg.MasterHash == "" ||
+				auth.CheckPassword(authPayload.Password, d.cfg.MasterHash)
+
+			if valid {
+				session.Authed = true
+				dc.SendJSON(protocol.NewMessage(protocol.MsgAuthOK, nil))
+				d.log.Info().Str("client", session.ClientID).Msg("Client authenticated")
+			} else {
+				dc.SendJSON(protocol.NewMessage(protocol.MsgAuthFail, nil))
+				d.log.Warn().Str("client", session.ClientID).Msg("Authentication failed")
+			}
+		}
+	})
+}
+
+func (d *Daemon) handleTerminalChannel(session *Session, dc *webrtc.DataChannel) {
+	if !session.Authed {
+		dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Not authenticated"))
+		return
+	}
+
+	// Spawn PTY
+	shell, err := d.ptyMgr.Spawn(24, 80)
+	if err != nil {
+		d.log.Error().Err(err).Msg("Failed to spawn PTY")
+		dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Failed to start shell"))
+		return
+	}
+	session.PTYSess = shell
+
+	// Pipe PTY output → DataChannel
+	go func() {
+		buf := make([]byte, 32768)
+		for {
+			n, err := shell.Read(buf)
+			if err != nil {
+				break
+			}
+			if n > 0 {
+				dc.Send(buf[:n])
+			}
+		}
+	}()
+
+	// Pipe DataChannel input → PTY
+	dc.OnMessage(func(data []byte) {
+		if !session.Authed {
+			return
+		}
+
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			// Raw input (fast path)
+			shell.Write(data)
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgInput:
+			var input string
+			json.Unmarshal(msg.Payload, &input)
+			shell.Write([]byte(input))
+		case protocol.MsgResize:
+			var resize protocol.ResizePayload
+			json.Unmarshal(msg.Payload, &resize)
+			shell.Resize(resize.Rows, resize.Cols)
+		}
+	})
+}
+
+func (d *Daemon) handleScreenChannel(session *Session, dc *webrtc.DataChannel) {
+	if !session.Authed {
+		dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Not authenticated"))
+		return
+	}
+
+	dc.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgScreenStart:
+			// Stop any existing streamer first
+			if session.ScreenStreamer != nil {
+				session.ScreenStreamer.Stop()
+				session.ScreenStreamer = nil
+			}
+
+			var cfg protocol.ScreenConfigPayload
+			if msg.Payload != nil {
+				json.Unmarshal(msg.Payload, &cfg)
+			}
+
+			streamCfg := screen.DefaultStreamConfig()
+			if cfg.FPS > 0 {
+				streamCfg.FPS = cfg.FPS
+			}
+			if cfg.Quality > 0 {
+				streamCfg.Quality = cfg.Quality
+			}
+			if cfg.MaxDimension > 0 {
+				streamCfg.MaxWidth = cfg.MaxDimension
+				streamCfg.MaxHeight = cfg.MaxDimension
+			}
+
+			var streamer *screen.Streamer
+			var err error
+			streamer, err = screen.NewStreamer(streamCfg, func(frameData []byte, width, height int, _ time.Time, _ time.Duration) bool {
+				// Only send if this streamer is still the active one
+				if session.ScreenStreamer != streamer {
+					return false
+				}
+
+				// Base64-encode JPEG data for JSON transport
+				encoded := base64.StdEncoding.EncodeToString(frameData)
+				framePayload := map[string]interface{}{
+					"width":  width,
+					"height": height,
+					"data":   encoded,
+				}
+				frameMsg := protocol.NewMessage(protocol.MsgScreenFrame, framePayload)
+				if err := dc.SendJSON(frameMsg); err != nil {
+					d.log.Warn().Err(err).Msg("Failed to send screen frame")
+					return false
+				}
+				return true
+			})
+			if err != nil {
+				d.log.Error().Err(err).Msg("Failed to create screen streamer")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Failed to start screen capture"))
+				return
+			}
+
+			session.ScreenStreamer = streamer
+			if err := streamer.StartAsync(); err != nil {
+				d.log.Error().Err(err).Msg("Failed to start screen streamer")
+				session.ScreenStreamer = nil
+				dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Failed to start screen capture"))
+				return
+			}
+
+			d.log.Info().Msg("Screen sharing started")
+
+		case protocol.MsgScreenStop:
+			if session.ScreenStreamer != nil {
+				session.ScreenStreamer.Stop()
+				session.ScreenStreamer = nil
+				d.log.Info().Msg("Screen sharing stopped")
+			}
+
+		case protocol.MsgMouseMove:
+			var payload protocol.MouseMovePayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return
+			}
+			if err := screen.MouseMove(payload.X, payload.Y); err != nil {
+				d.log.Warn().Err(err).Msg("MouseMove failed")
+			}
+
+		case protocol.MsgMouseClick:
+			var payload protocol.MouseClickPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return
+			}
+			if payload.Down {
+				if err := screen.MouseButtonDown(payload.Button, payload.X, payload.Y); err != nil {
+					d.log.Warn().Err(err).Msg("MouseButtonDown failed")
+				}
+			} else {
+				if err := screen.MouseButtonUp(payload.Button, payload.X, payload.Y); err != nil {
+					d.log.Warn().Err(err).Msg("MouseButtonUp failed")
+				}
+			}
+
+		case protocol.MsgMouseScroll:
+			var payload protocol.MouseScrollPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return
+			}
+			if err := screen.MouseScroll(payload.DeltaX, payload.DeltaY); err != nil {
+				d.log.Warn().Err(err).Msg("MouseScroll failed")
+			}
+
+		case protocol.MsgKeyPress:
+			var payload protocol.KeyPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return
+			}
+			if payload.Chars != "" {
+				// Send each character as a key press
+				for _, ch := range payload.Chars {
+					keyCode := screen.StringToKeyCode(string(ch))
+					if keyCode != 0 {
+						if err := screen.KeyPress(keyCode); err != nil {
+							d.log.Warn().Err(err).Msg("KeyPress failed for char")
+						}
+					}
+				}
+			} else if payload.KeyCode != 0 {
+				if err := screen.KeyPress(payload.KeyCode); err != nil {
+					d.log.Warn().Err(err).Msg("KeyPress failed")
+				}
+			}
+
+		case protocol.MsgKeyRelease:
+			var payload protocol.KeyPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return
+			}
+			var keyCode uint16
+			if payload.Chars != "" {
+				keyCode = screen.StringToKeyCode(payload.Chars)
+			} else {
+				keyCode = payload.KeyCode
+			}
+			if keyCode != 0 {
+				if err := screen.KeyRelease(keyCode); err != nil {
+					d.log.Warn().Err(err).Msg("KeyRelease failed")
+				}
+			}
+		}
+	})
+}
+
+func (d *Daemon) handleTransferChannel(session *Session, dc *webrtc.DataChannel) {
+	if !session.Authed {
+		dc.SendJSON(protocol.NewMessage(protocol.MsgError, "Not authenticated"))
+		return
+	}
+
+	dc.OnMessage(func(data []byte) {
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case protocol.MsgFileRequest:
+			var req protocol.FileRequestPayload
+			if err := json.Unmarshal(msg.Payload, &req); err != nil {
+				return
+			}
+
+			// Prepare to receive the file
+			t, err := d.transferMgr.InitiateReceive(req)
+			if err != nil {
+				d.log.Error().Err(err).Msg("Failed to initiate receive")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgFileError,
+					protocol.FileTransferErrorPayload{
+						TransferID: req.TransferID,
+						Code:       "init_failed",
+						Message:    err.Error(),
+					}))
+				return
+			}
+
+			d.log.Info().
+				Str("transfer_id", t.ID).
+				Str("name", t.Name).
+				Int64("size", t.Size).
+				Msg("Incoming file transfer, accepting")
+
+			// Auto-accept the file transfer
+			dc.SendJSON(protocol.NewMessage(protocol.MsgFileAccept, map[string]interface{}{
+				"transfer_id": req.TransferID,
+			}))
+
+		case protocol.MsgFileChunk:
+			var chunk protocol.FileChunkPayload
+			if err := json.Unmarshal(msg.Payload, &chunk); err != nil {
+				return
+			}
+
+			t := d.transferMgr.Get(chunk.TransferID)
+			if t == nil {
+				d.log.Warn().Str("transfer_id", chunk.TransferID).Msg("Unknown transfer for chunk")
+				return
+			}
+
+			if err := t.WriteChunk(chunk.Index, chunk.Data, chunk.Checksum); err != nil {
+				d.log.Error().Err(err).
+					Str("transfer_id", chunk.TransferID).
+					Int("chunk", chunk.Index).
+					Msg("Failed to write chunk")
+				dc.SendJSON(protocol.NewMessage(protocol.MsgFileError,
+					protocol.FileTransferErrorPayload{
+						TransferID: chunk.TransferID,
+						Code:       "write_failed",
+						Message:    err.Error(),
+					}))
+				return
+			}
+
+			// Report progress
+			dc.SendJSON(protocol.NewMessage(protocol.MsgFileProgress,
+				protocol.FileProgressPayload{
+					TransferID: chunk.TransferID,
+					BytesSent:  t.BytesSent,
+					TotalBytes: t.Size,
+				}))
+
+		case protocol.MsgFileComplete:
+			var complete protocol.FileTransferCompletePayload
+			if err := json.Unmarshal(msg.Payload, &complete); err != nil {
+				return
+			}
+
+			t := d.transferMgr.Get(complete.TransferID)
+			if t == nil {
+				return
+			}
+			t.Complete()
+			d.log.Info().
+				Str("name", t.Name).
+				Str("path", t.Path).
+				Int64("size", complete.Size).
+				Msg("File transfer completed")
+
+		case protocol.MsgFileCancel:
+			var cancelPayload struct {
