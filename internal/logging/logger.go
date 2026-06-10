@@ -71,3 +71,39 @@ type AuditLogEntry struct {
 	RoomID  string    `json:"room_id,omitempty"`
 	Remote  string    `json:"remote,omitempty"`
 	Success bool      `json:"success"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// AuditLogger records security events as JSON lines.
+type AuditLogger struct {
+	w io.Writer
+}
+
+// NewAuditLogger creates an audit logger.
+func NewAuditLogger(logFile string) (*AuditLogger, error) {
+	w := io.Discard
+	if logFile != "" {
+		auditFile := logFile + ".audit.json"
+		f, err := os.OpenFile(auditFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, err
+		}
+		w = f
+	}
+	return &AuditLogger{w: w}, nil
+}
+
+// Log records an audit event.
+func (a *AuditLogger) Log(event string, peerID, roomID, remote, detail string, success bool) {
+	entry := AuditLogEntry{
+		Time:    time.Now(),
+		Event:   event,
+		PeerID:  peerID,
+		RoomID:  roomID,
+		Remote:  remote,
+		Success: success,
+		Detail:  detail,
+	}
+	data, _ := json.Marshal(entry)
+	fmt.Fprintf(a.w, "%s\n", string(data))
+}
