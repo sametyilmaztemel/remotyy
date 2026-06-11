@@ -76,3 +76,81 @@ func NewMetrics() *Metrics {
 				Help:      "Current number of authenticated sessions.",
 			}),
 			HostUptimeSeconds: promauto.NewGauge(prometheus.GaugeOpts{
+				Namespace: "remotty",
+				Subsystem: "host",
+				Name:      "host_uptime_seconds",
+				Help:      "Uptime of the host daemon in seconds.",
+			}),
+			MessageLatencySeconds: promauto.NewHistogram(prometheus.HistogramOpts{
+				Namespace: "remotty",
+				Subsystem: "host",
+				Name:      "message_latency_seconds",
+				Help:      "Latency of message processing in seconds.",
+				Buckets:   prometheus.DefBuckets,
+			}),
+			FrameEncodingDurationSeconds: promauto.NewHistogram(prometheus.HistogramOpts{
+				Namespace: "remotty",
+				Subsystem: "host",
+				Name:      "frame_encoding_duration_seconds",
+				Help:      "Duration of screen frame encoding in seconds.",
+				Buckets:   prometheus.DefBuckets,
+			}),
+		}
+	})
+	return metrics
+}
+
+// ======== Health Endpoints ========
+
+// HealthResponse represents the JSON body returned by health endpoints.
+type HealthResponse struct {
+	Status    string `json:"status"`
+	Uptime    string `json:"uptime,omitempty"`
+	Timestamp string `json:"timestamp"`
+	Version   string `json:"version,omitempty"`
+}
+
+// HealthHandler returns an HTTP handler that reports /health (always 200 OK).
+func HealthHandler(version string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := HealthResponse{
+			Status:    "ok",
+			Uptime:    formatDuration(time.Since(startTime)),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Version:   version,
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// ReadinessHandler returns an HTTP handler that reports /ready.
+// It can be given a set of readiness checks. Returns 200 when ready,
+// 503 when not.
+type ReadinessHandler struct {
+	mu       sync.RWMutex
+	checks   []ReadinessCheck
+}
+
+// ReadinessCheck is a function that returns nil when the component is ready,
+// or an error describing why it is not.
+type ReadinessCheck func() error
+
+// NewReadinessHandler creates a readiness handler.
+func NewReadinessHandler() *ReadinessHandler {
+	return &ReadinessHandler{}
+}
+
+// AddCheck registers a readiness check.
+func (h *ReadinessHandler) AddCheck(name string, fn func() error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.checks = append(h.checks, ReadinessCheck(fn))
+}
+
+// ServeHTTP implements http.Handler.
+func (h *ReadinessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var unavailable bool
