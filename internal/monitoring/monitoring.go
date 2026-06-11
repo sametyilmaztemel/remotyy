@@ -154,3 +154,81 @@ func (h *ReadinessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	var unavailable bool
+	checks := make(map[string]string)
+
+	for _, check := range h.checks {
+		if err := check(); err != nil {
+			unavailable = true
+			checks[fmt.Sprintf("%T", check)] = err.Error()
+		}
+	}
+
+	if unavailable {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "not ready",
+			"checks": checks,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(HealthResponse{
+		Status:    "ready",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// ======== Metrics HTTP Handler ========
+
+// MetricsHandler returns an HTTP handler that exposes Prometheus metrics.
+func MetricsHandler() http.Handler {
+	return promhttp.Handler()
+}
+
+// ======== Helper ========
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	secs := int(d.Seconds()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm%ds", days, hours, mins, secs)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
+	}
+	if mins > 0 {
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
+}
+
+// ======== Uptime Tracking ========
+
+// RecordUptime sets the host_uptime_seconds gauge to the current uptime.
+// Call this periodically (e.g., every 10s) from the daemon main loop.
+func RecordUptime() {
+	if metrics == nil {
+		return
+	}
+	metrics.HostUptimeSeconds.Set(time.Since(startTime).Seconds())
+}
+
+// ======== Go Runtime Metrics (optional) ========
+
+// RecordGoMetrics exposes basic Go runtime stats as prometheus gauges.
+func RecordGoMetrics() {
+	if metrics == nil {
+		return
+	}
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	// These are optional — expose via promhttp.DefaultRegisterer metrics.
+}
+
+// Metrics returns the global Metrics instance.
+func GetMetrics() *Metrics {
+	return metrics
+}
