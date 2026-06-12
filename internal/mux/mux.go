@@ -45,3 +45,28 @@ func (m *Multiplexer) OpenChannel(id ChannelID) (chan []byte, error) {
 	m.listeners[id] = ch
 	return ch, nil
 }
+
+// WriteTo sends data to a specific channel.
+func (m *Multiplexer) WriteTo(id ChannelID, data []byte) error {
+	m.mu.Lock()
+	ch, ok := m.listeners[id]
+	m.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("channel %d not found", id)
+	}
+
+	select {
+	case ch <- data:
+	default:
+		// Drop if full
+	}
+	return nil
+}
+
+// Close removes a channel.
+func (m *Multiplexer) Close(id ChannelID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.listeners, id)
+}
