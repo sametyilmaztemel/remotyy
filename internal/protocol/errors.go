@@ -27,3 +27,17 @@ const (
 
 	// Session errors (4xxx)
 	ErrInvalidState      = 4001 // Operation not valid in current state
+	ErrMaxSessions       = 4002 // Max concurrent sessions reached
+	ErrNotAllowed        = 4003 // Client not in allow list
+	ErrFeatureDisabled   = 4004 // Requested feature not enabled
+
+	// Internal errors (5xxx)
+	ErrInternal          = 5001 // Unexpected server error
+	ErrShutdown          = 5002 // Server is shutting down
+)
+
+// ErrorPayload represents a structured error message.
+type ErrorPayload struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
