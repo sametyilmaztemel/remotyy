@@ -12,3 +12,18 @@ const (
 	ErrUnauthorized      = 1001 // Missing or invalid auth token
 	ErrAuthFailed        = 1002 // Wrong master password
 	ErrAuthRequired      = 1003 // Auth required but not provided
+
+	// Connection errors (2xxx)
+	ErrHostNotFound      = 2001 // Requested host is offline/unknown
+	ErrRoomNotFound      = 2002 // Room does not exist
+	ErrPeerDisconnected  = 2003 // Peer has disconnected
+	ErrRateLimited       = 2004 // Too many requests
+
+	// Protocol errors (3xxx)
+	ErrInvalidPayload    = 3001 // Malformed or unparseable payload
+	ErrInvalidMessage    = 3002 // Malformed JSON message
+	ErrUnknownType       = 3003 // Unknown message type
+	ErrPayloadTooLarge   = 3004 // Message exceeds size limit
+
+	// Session errors (4xxx)
+	ErrInvalidState      = 4001 // Operation not valid in current state
