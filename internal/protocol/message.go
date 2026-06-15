@@ -151,3 +151,79 @@ type FileRequestPayload struct {
 type FileChunkPayload struct {
 	TransferID string `json:"transfer_id"`
 	Index      int    `json:"index"`
+	Data       []byte `json:"data"`
+	Checksum   string `json:"checksum,omitempty"` // SHA256 of chunk
+}
+
+// FileProgressPayload reports transfer progress.
+type FileProgressPayload struct {
+	TransferID string `json:"transfer_id"`
+	BytesSent  int64  `json:"bytes_sent"`
+	TotalBytes int64  `json:"total_bytes"`
+	Speed      int64  `json:"speed"` // bytes/sec
+}
+
+// FileTransferCompletePayload signals file transfer completion.
+type FileTransferCompletePayload struct {
+	TransferID string `json:"transfer_id"`
+	Checksum   string `json:"checksum,omitempty"` // SHA256 of entire file
+	Size       int64  `json:"size"`
+}
+
+// FileTransferErrorPayload reports a file transfer error.
+type FileTransferErrorPayload struct {
+	TransferID string `json:"transfer_id"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+}
+
+// ScreenConfigPayload configures screen sharing.
+type ScreenConfigPayload struct {
+	FPS           int  `json:"fps"`
+	Quality       int  `json:"quality"`
+	MaxDimension  int  `json:"max_dimension"`
+	CaptureCursor bool `json:"capture_cursor"`
+}
+
+// MouseMovePayload for remote mouse movement.
+type MouseMovePayload struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// MouseClickPayload for remote mouse click.
+type MouseClickPayload struct {
+	Button int     `json:"button"` // 0=left, 1=right, 2=middle
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Down   bool    `json:"down"`
+}
+
+// MouseScrollPayload for remote scroll.
+type MouseScrollPayload struct {
+	DeltaX float64 `json:"delta_x"`
+	DeltaY float64 `json:"delta_y"`
+}
+
+// KeyPayload for remote keyboard input.
+type KeyPayload struct {
+	KeyCode uint16 `json:"key_code"`
+	Chars   string `json:"chars,omitempty"`
+}
+
+// ClipboardPayload carries clipboard contents.
+type ClipboardPayload struct {
+	Text string `json:"text"`
+}
+
+
+// ClipboardData carries clipboard content for data sync.
+type ClipboardData struct {
+	ClipboardText string `json:"clipboard_text"`
+	Timestamp     int64  `json:"timestamp,omitempty"`
+}
+
+// ClipboardRequest requests the current clipboard content from the peer.
+type ClipboardRequest struct {
+	RequestID string `json:"request_id,omitempty"`
+}
