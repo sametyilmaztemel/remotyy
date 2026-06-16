@@ -47,3 +47,52 @@ func (m *Manager) Spawn(rows, cols uint16) (*Session, error) {
 	}
 
 	cmd := exec.Command(shell)
+	cmd.Env = append(os.Environ(),
+		"TERM=xterm-256color",
+		fmt.Sprintf("LINES=%d", rows),
+		fmt.Sprintf("COLUMNS=%d", cols),
+	)
+
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Rows: rows,
+		Cols: cols,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start pty: %w", err)
+	}
+
+	s := &Session{
+		PTY:     f,
+		cmd:     cmd,
+		pid:     cmd.Process.Pid,
+		rows:    rows,
+		cols:    cols,
+		created: time.Now(),
+		done:    make(chan struct{}),
+	}
+
+	sessionID := fmt.Sprintf("sess-%d", m.nextID)
+	m.nextID++
+
+	m.mu.Lock()
+	m.sessions[sessionID] = s
+	m.mu.Unlock()
+
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.Debug().Err(err).Int("pid", s.pid).Msg("Shell process exited")
+		}
+		close(s.done)
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+	}()
+
+	log.Debug().Int("pid", s.pid).Str("shell", shell).Msg("PTY session started")
+	return s, nil
+}
+
+// Read reads output from the PTY (stdout of shell process).
+func (s *Session) Read(buf []byte) (int, error) {
+	return s.PTY.Read(buf)
+}
