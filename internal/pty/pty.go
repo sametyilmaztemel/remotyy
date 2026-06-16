@@ -96,3 +96,51 @@ func (m *Manager) Spawn(rows, cols uint16) (*Session, error) {
 func (s *Session) Read(buf []byte) (int, error) {
 	return s.PTY.Read(buf)
 }
+
+// ReadWithDeadline reads with a timeout.
+func (s *Session) ReadWithDeadline(buf []byte, timeout time.Duration) (int, error) {
+	s.PTY.SetReadDeadline(time.Now().Add(timeout))
+	n, err := s.PTY.Read(buf)
+	s.PTY.SetReadDeadline(time.Time{})
+	return n, err
+}
+
+// Write writes input to the PTY (stdin of shell process).
+func (s *Session) Write(data []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.PTY.Write(data)
+}
+
+// Resize changes the terminal window dimensions.
+func (s *Session) Resize(rows, cols uint16) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = rows
+	s.cols = cols
+	return pty.Setsize(s.PTY, &pty.Winsize{Rows: rows, Cols: cols})
+}
+
+// Close terminates the session.
+func (s *Session) Close() error {
+	s.cmd.Process.Kill()
+	return s.PTY.Close()
+}
+
+// Done returns a channel that closes when the session ends.
+func (s *Session) Done() <-chan struct{} {
+	return s.done
+}
+
+// IsAlive checks if the session is still running.
+func (s *Session) IsAlive() bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// Ensure Session implements io.ReadWriter.
+var _ io.ReadWriter = (*Session)(nil)
