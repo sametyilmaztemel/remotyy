@@ -58,3 +58,32 @@ func (r *Recorder) RecordIO(event string, data []byte) {
 		Event:     event,
 		Data:      string(data),
 	})
+}
+
+// RecordResize records a resize event.
+func (r *Recorder) RecordResize(rows, cols uint16) {
+	if !r.enabled {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = append(r.entries, RecordEntry{
+		Timestamp: time.Since(r.start).Milliseconds(),
+		Event:     "r",
+		Rows:      rows,
+		Cols:      cols,
+	})
+}
+
+// Close flushes and closes the recording.
+func (r *Recorder) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.enabled = false
+	enc := json.NewEncoder(r.file)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(r.entries); err != nil {
+		return err
+	}
+	return r.file.Close()
+}
