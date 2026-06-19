@@ -132,3 +132,70 @@ func cgImageToRGBA(img C.CGImageRef) (*image.RGBA, error) {
 	C.CGContextScaleCTM(ctx, 1, -1)
 
 	C.CGContextDrawImage(ctx, C.CGRectMake(0, 0, C.CGFloat(width), C.CGFloat(height)), img)
+
+	ctxData := C.CGBitmapContextGetData(ctx)
+	if ctxData == nil {
+		return nil, fmt.Errorf("CGBitmapContextGetData returned NULL")
+	}
+
+	C.memcpy(unsafe.Pointer(&rgba.Pix[0]), ctxData, C.size_t(width*height*4))
+	return rgba, nil
+}
+
+// ListDisplays returns active display IDs.
+func ListDisplays() ([]int, error) {
+	maxDisplays := C.uint32_t(16)
+	displays := make([]C.uint32_t, maxDisplays)
+	var displayCount C.uint32_t
+
+	err := C.CGGetOnlineDisplayList(maxDisplays, &displays[0], &displayCount)
+	if err != C.kCGErrorSuccess {
+		return nil, fmt.Errorf("CGGetOnlineDisplayList failed with error %d", int(err))
+	}
+
+	ids := make([]int, displayCount)
+	for i := C.uint32_t(0); i < displayCount; i++ {
+		ids[i] = int(displays[i])
+	}
+	return ids, nil
+}
+
+// DisplayWidth returns width in points.
+func DisplayWidth(displayID int) int {
+	return int(C.CGDisplayPixelsWide(C.uint32_t(displayID)))
+}
+
+// DisplayHeight returns height in points.
+func DisplayHeight(displayID int) int {
+	return int(C.CGDisplayPixelsHigh(C.uint32_t(displayID)))
+}
+
+// MainDisplayID returns the main display ID.
+func MainDisplayID() int {
+	return int(C.CGMainDisplayID())
+}
+
+// GetScaleFactor returns the backing scale factor (e.g., 1.0, 2.0).
+func GetScaleFactor(displayID int) float64 {
+	mode := C.CGDisplayCopyDisplayMode(C.uint32_t(displayID))
+	if C.displayModeIsNull(mode) != 0 {
+		return 1.0
+	}
+	defer C.CGDisplayModeRelease(mode)
+
+	pixelWidth := int(C.CGDisplayModeGetPixelWidth(mode))
+	pixelHeight := int(C.CGDisplayModeGetPixelHeight(mode))
+	pointWidth := DisplayWidth(displayID)
+	pointHeight := DisplayHeight(displayID)
+
+	if pointWidth == 0 || pointHeight == 0 {
+		return 1.0
+	}
+
+	scaleX := float64(pixelWidth) / float64(pointWidth)
+	scaleY := float64(pixelHeight) / float64(pointHeight)
+	if scaleX > scaleY {
+		return scaleX
+	}
+	return scaleY
+}
