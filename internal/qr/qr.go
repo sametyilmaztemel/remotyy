@@ -41,3 +41,24 @@ func Generate(p PairingURL) (qrArt, url string, err error) {
 
 // GenerateSmall creates a smaller QR (2x smaller) for terminals.
 func GenerateSmall(p PairingURL) (qrArt, url string, err error) {
+	url = p.Encode()
+	code, err := qrcode.New(url, qrcode.Low)
+	if err != nil {
+		return "", "", fmt.Errorf("generate qr: %w", err)
+	}
+	qrArt = code.ToSmallString(false)
+	return qrArt, url, nil
+}
+
+// DecodeURL parses a remotty:// URL back into pairing info.
+func DecodeURL(raw string) (*PairingURL, error) {
+	if !strings.HasPrefix(raw, "remotty://connect/") {
+		return nil, fmt.Errorf("invalid remotty URL: %s", raw)
+	}
+	payload := strings.TrimPrefix(raw, "remotty://connect/")
+	var p PairingURL
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return nil, fmt.Errorf("decode pairing data: %w", err)
+	}
+	return &p, nil
+}
