@@ -64,3 +64,71 @@ func captureDisplay(displayID int) (*image.RGBA, error) {
 	if displayID == 0 {
 		targetDisplay = mainDisplayID
 	}
+
+	// Validate display
+	bounds := C.CGDisplayBounds(targetDisplay)
+	if C.rectIsNull(bounds) != 0 || C.rectIsEmpty(bounds) != 0 {
+		return nil, fmt.Errorf("display %d is not active or invalid", displayID)
+	}
+
+	// Primary: CGDisplayCreateImage via dlsym
+	imageRef := C.callCGDisplayCreateImage(targetDisplay)
+	if C.cgImageIsNull(imageRef) != 0 && targetDisplay != mainDisplayID {
+		log.Warn().Int("display_id", displayID).Msg("Failed to capture requested display, trying main display")
+		imageRef = C.callCGDisplayCreateImage(mainDisplayID)
+	}
+	if C.cgImageIsNull(imageRef) != 0 {
+		log.Debug().Msg("CGDisplayCreateImage failed, trying CGWindowListCreateImage")
+		imageRef = captureDisplayFallback(targetDisplay)
+	}
+	if C.cgImageIsNull(imageRef) != 0 {
+		return nil, fmt.Errorf("screen capture failed — check Screen Recording permission in System Settings > Privacy & Security > Screen Recording")
+	}
+	defer C.CGImageRelease(imageRef)
+
+	return cgImageToRGBA(imageRef)
+}
+
+// captureDisplayFallback uses CGWindowListCreateImage via dlsym.
+func captureDisplayFallback(displayID C.uint32_t) C.CGImageRef {
+	bounds := C.CGDisplayBounds(displayID)
+	if C.rectIsNull(bounds) != 0 || C.rectIsEmpty(bounds) != 0 {
+		return C.callCGDisplayCreateImage(C.CGMainDisplayID())
+	}
+
+	return C.callCGWindowListCreateImage(
+		bounds,
+		C.kCGWindowListOptionOnScreenOnly,
+		C.kCGNullWindowID,
+		C.kCGWindowImageDefault,
+	)
+}
+
+// cgImageToRGBA converts a CGImageRef to *image.RGBA via bitmap context.
+func cgImageToRGBA(img C.CGImageRef) (*image.RGBA, error) {
+	width := int(C.CGImageGetWidth(img))
+	height := int(C.CGImageGetHeight(img))
+	if width == 0 || height == 0 {
+		return nil, fmt.Errorf("captured image has zero dimensions (%dx%d)", width, height)
+	}
+
+	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	colorSpace := C.CGColorSpaceCreateDeviceRGB()
+	if C.colorSpaceIsNull(colorSpace) != 0 {
+		return nil, fmt.Errorf("CGColorSpaceCreateDeviceRGB failed")
+	}
+	defer C.CGColorSpaceRelease(colorSpace)
+
+	bitmapInfo := C.CGBitmapInfo(C.kCGImageAlphaPremultipliedLast) | C.kCGBitmapByteOrder32Big
+	ctx := C.CGBitmapContextCreate(nil, C.size_t(width), C.size_t(height), 8, C.size_t(width*4), colorSpace, bitmapInfo)
+	if C.contextIsNull(ctx) != 0 {
+		return nil, fmt.Errorf("CGBitmapContextCreate failed")
+	}
+	defer C.CGContextRelease(ctx)
+
+	// Flip Y axis (CoreGraphics uses bottom-left origin)
+	C.CGContextTranslateCTM(ctx, 0, C.CGFloat(height))
+	C.CGContextScaleCTM(ctx, 1, -1)
+
+	C.CGContextDrawImage(ctx, C.CGRectMake(0, 0, C.CGFloat(width), C.CGFloat(height)), img)
