@@ -87,3 +87,47 @@ func (c *Capturer) Start() error {
 					}
 				}
 			}
+		}
+	}()
+
+	log.Info().Int("fps", c.cfg.FPS).Msg("Screen capture started")
+	return nil
+}
+
+// Stop stops capturing.
+func (c *Capturer) Stop() {
+	if c.running {
+		close(c.stopCh)
+		c.running = false
+	}
+	log.Info().Msg("Screen capture stopped")
+}
+
+// Frames returns the frame channel.
+func (c *Capturer) Frames() <-chan *image.RGBA {
+	return c.frameCh
+}
+
+// captureFrame captures a single screen frame.
+// Platform-specific implementation.
+func (c *Capturer) captureFrame() (*image.RGBA, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return c.captureMacOS()
+	case "linux":
+		return c.captureLinux()
+	default:
+		return nil, fmt.Errorf("screen capture not supported on %s", runtime.GOOS)
+	}
+}
+
+func (c *Capturer) captureMacOS() (*image.RGBA, error) {
+	return captureDisplay(c.cfg.DisplayID)
+}
+
+func (c *Capturer) captureLinux() (*image.RGBA, error) {
+	// Linux: Use X11 or PipeWire
+	return nil, fmt.Errorf("Linux screen capture requires X11/PipeWire")
+}
+
+// EncodeJPEG is implemented in encoder.go (cross-platform file).
