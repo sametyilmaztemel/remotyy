@@ -42,3 +42,48 @@ func NewCapturer(cfg Config) (*Capturer, error) {
 		cfg.FPS = 15
 	}
 	if cfg.Quality == 0 {
+		cfg.Quality = 60
+	}
+	if cfg.MaxDimension == 0 {
+		cfg.MaxDimension = 1920
+	}
+
+	c := &Capturer{
+		cfg:     cfg,
+		frameCh: make(chan *image.RGBA, 2),
+		stopCh:  make(chan struct{}),
+	}
+
+	return c, nil
+}
+
+// Start begins capturing frames.
+func (c *Capturer) Start() error {
+	if c.running {
+		return nil
+	}
+	c.running = true
+
+	go func() {
+		ticker := time.NewTicker(time.Second / time.Duration(c.cfg.FPS))
+		defer ticker.Stop()
+		defer func() { c.running = false }()
+
+		for {
+			select {
+			case <-c.stopCh:
+				return
+			case <-ticker.C:
+				frame, err := c.captureFrame()
+				if err != nil {
+					log.Warn().Err(err).Msg("Screen capture failed")
+					continue
+				}
+				if frame != nil {
+					select {
+					case c.frameCh <- frame:
+					default:
+						// Drop frame if channel full
+					}
+				}
+			}
