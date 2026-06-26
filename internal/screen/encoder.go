@@ -35,3 +35,41 @@ func EncodeJPEG(img *image.RGBA, quality int) ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
+	err := jpeg.Encode(&buf, img, &jpeg.Options{
+		Quality: quality,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jpeg encode: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// EncodeJPEGOpts encodes an image to JPEG with full options.
+func EncodeJPEGOpts(img *image.RGBA, opts JPEGEncodeOptions) ([]byte, error) {
+	if img == nil {
+		return nil, fmt.Errorf("cannot encode nil image")
+	}
+	if opts.Quality <= 0 {
+		opts.Quality = 80
+	}
+	if opts.Quality > 100 {
+		opts.Quality = 100
+	}
+
+	var buf bytes.Buffer
+	err := jpeg.Encode(&buf, img, &jpeg.Options{
+		Quality: opts.Quality,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jpeg encode: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// EncodePNG encodes an *image.RGBA to PNG bytes.
+func EncodePNG(img *image.RGBA) ([]byte, error) {
+	if img == nil {
+		return nil, fmt.Errorf("cannot encode nil image")
+	}
+
+	var buf bytes.Buffer
