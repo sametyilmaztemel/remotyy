@@ -73,3 +73,40 @@ func EncodePNG(img *image.RGBA) ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
+	err := png.Encode(&buf, img)
+	if err != nil {
+		return nil, fmt.Errorf("png encode: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// EstimateJPEGSize estimates the expected JPEG size for a given image based
+// on dimensions and quality. Useful for bandwidth planning.
+func EstimateJPEGSize(width, height, quality int) int {
+	// Rough heuristic: uncompressed RGBA / compression ratio
+	// A quality-80 JPEG compresses roughly 10:1 to 20:1 for photos,
+	// 5:1 to 10:1 for UI/screen content.
+	pixels := width * height
+	rawBytes := pixels * 4 // RGBA
+
+	compressionRatio := 15
+	if quality > 90 {
+		compressionRatio = 8
+	} else if quality > 70 {
+		compressionRatio = 12
+	} else if quality > 50 {
+		compressionRatio = 18
+	} else {
+		compressionRatio = 25
+	}
+
+	estimated := rawBytes / compressionRatio
+
+	// JPEG headers and overhead (~1KB)
+	estimated += 1024
+
+	return estimated
+}
+
+// compile-time interface check
+var _ image.Image = (*image.RGBA)(nil)
