@@ -332,3 +332,169 @@ func (s *Streamer) computeAdaptiveQuality() int {
 		total += d
 	}
 	s.avgFrameDur = total / time.Duration(len(s.frameTimes))
+
+	// Target frame interval
+	targetInterval := time.Second / time.Duration(s.cfg.FPS)
+
+	// How much of the frame budget are we using?
+	ratio := float64(s.avgFrameDur) / float64(targetInterval)
+
+	currentQuality := s.cfg.Quality
+
+	switch {
+	case ratio > 0.85:
+		// Running out of time — reduce quality
+		currentQuality -= 5
+	case ratio < 0.4 && currentQuality < s.cfg.MaxQuality:
+		// Lots of slack — increase quality
+		currentQuality += 5
+	case ratio < 0.6 && currentQuality < s.cfg.MaxQuality:
+		// Some slack — increase quality slowly
+		currentQuality += 2
+	}
+
+	// Clamp
+	if currentQuality < s.cfg.MinQuality {
+		currentQuality = s.cfg.MinQuality
+	}
+	if currentQuality > s.cfg.MaxQuality {
+		currentQuality = s.cfg.MaxQuality
+	}
+
+	s.cfg.Quality = currentQuality
+	return currentQuality
+}
+
+// downscale performs bilinear downscaling of the image to fit within
+// MaxWidth x MaxHeight while maintaining aspect ratio.
+func (s *Streamer) downscale(src *image.RGBA) *image.RGBA {
+	bounds := src.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+
+	maxW := s.cfg.MaxWidth
+	maxH := s.cfg.MaxHeight
+
+	// If no max or image is already smaller, return as-is
+	if (maxW <= 0 || srcW <= maxW) && (maxH <= 0 || srcH <= maxH) {
+		return src
+	}
+
+	// If one dimension is unconstrained, use the other
+	if maxW <= 0 {
+		maxW = srcW
+	}
+	if maxH <= 0 {
+		maxH = srcH
+	}
+
+	// Calculate scaled dimensions maintaining aspect ratio
+	dstW, dstH := srcW, srcH
+	if srcW > maxW {
+		dstW = maxW
+		dstH = srcH * maxW / srcW
+	}
+	if dstH > maxH {
+		dstH = maxH
+		dstW = srcW * maxH / srcH
+	}
+
+	if dstW <= 0 {
+		dstW = 1
+	}
+	if dstH <= 0 {
+		dstH = 1
+	}
+
+	// Only scale if actually needed
+	if dstW == srcW && dstH == srcH {
+		return src
+	}
+
+	return scaleBilinear(src, dstW, dstH)
+}
+
+// scaleBilinear performs a simple bilinear interpolation downscale.
+func scaleBilinear(src *image.RGBA, dstW, dstH int) *image.RGBA {
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+
+	// Simple bilinear interpolation
+	for dy := 0; dy < dstH; dy++ {
+		for dx := 0; dx < dstW; dx++ {
+			// Map destination pixel to source coordinates
+			sx := float64(dx) * float64(srcW) / float64(dstW)
+			sy := float64(dy) * float64(srcH) / float64(dstH)
+
+			// Get surrounding pixels
+			x0 := int(sx)
+			y0 := int(sy)
+			x1 := x0 + 1
+			y1 := y0 + 1
+
+			if x1 >= srcW {
+				x1 = srcW - 1
+			}
+			if y1 >= srcH {
+				y1 = srcH - 1
+			}
+
+			// Fractional parts
+			xFrac := sx - float64(x0)
+			yFrac := sy - float64(y0)
+
+			// Sample four pixels
+			p00 := src.RGBAAt(x0+srcBounds.Min.X, y0+srcBounds.Min.Y)
+			p10 := src.RGBAAt(x1+srcBounds.Min.X, y0+srcBounds.Min.Y)
+			p01 := src.RGBAAt(x0+srcBounds.Min.X, y1+srcBounds.Min.Y)
+			p11 := src.RGBAAt(x1+srcBounds.Min.X, y1+srcBounds.Min.Y)
+
+			// Bilinear interpolate each channel
+			r := lerp(lerp(float64(p00.R), float64(p10.R), xFrac),
+				lerp(float64(p01.R), float64(p11.R), xFrac), yFrac)
+			g := lerp(lerp(float64(p00.G), float64(p10.G), xFrac),
+				lerp(float64(p01.G), float64(p11.G), xFrac), yFrac)
+			b := lerp(lerp(float64(p00.B), float64(p10.B), xFrac),
+				lerp(float64(p01.B), float64(p11.B), xFrac), yFrac)
+			a := lerp(lerp(float64(p00.A), float64(p10.A), xFrac),
+				lerp(float64(p01.A), float64(p11.A), xFrac), yFrac)
+
+			dst.SetRGBA(dx, dy, color.RGBA{
+				R: uint8(clamp(int(r+0.5), 0, 255)),
+				G: uint8(clamp(int(g+0.5), 0, 255)),
+				B: uint8(clamp(int(b+0.5), 0, 255)),
+				A: uint8(clamp(int(a+0.5), 0, 255)),
+			})
+		}
+	}
+
+	return dst
+}
+
+func lerp(a, b, t float64) float64 {
+	return a + (b-a)*t
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// StreamStats contains streaming statistics.
+type StreamStats struct {
+	FramesCaptured int64         `json:"frames_captured"`
+	FramesSkipped  int64         `json:"frames_skipped"`
+	TotalBytes     int64         `json:"total_bytes"`
+	Uptime         time.Duration `json:"uptime"`
+	AverageFPS     float64       `json:"average_fps"`
+	CurrentQuality int           `json:"current_quality"`
+	IsRunning      bool          `json:"is_running"`
+}
