@@ -72,3 +72,40 @@ func MouseScroll(deltaX, deltaY float64) error {
 
 // KeyPress is a stub for non-macOS builds.
 func KeyPress(keyCode uint16) error {
+	return &AccessibilityError{
+		Message: "keyboard input requires macOS with CGO",
+	}
+}
+
+// KeyRelease is a stub for non-macOS builds.
+func KeyRelease(keyCode uint16) error {
+	return &AccessibilityError{
+		Message: "keyboard input requires macOS with CGO",
+	}
+}
+
+// KeyTap is a stub for non-macOS builds.
+func KeyTap(keyCode uint16) error {
+	return &AccessibilityError{
+		Message: "keyboard input requires macOS with CGO",
+	}
+}
+
+// KeyPressWithModifiers is a stub for non-macOS builds.
+func KeyPressWithModifiers(keyCode uint16, flags uint64) error {
+	return &AccessibilityError{
+		Message: "keyboard input requires macOS with CGO",
+	}
+}
+
+// GetMouseLocation is a stub for non-macOS builds.
+func GetMouseLocation() (x, y float64, err error) {
+	return 0, 0, &AccessibilityError{
+		Message: "mouse location requires macOS with CGO",
+	}
+}
+
+// StringToKeyCode is a stub for non-macOS builds.
+func StringToKeyCode(ch string) uint16 {
+	return 0
+}
