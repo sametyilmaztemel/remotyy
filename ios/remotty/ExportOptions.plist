@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Distribution method: app-store, development, enterprise, ad-hoc -->
+    <key>method</key>
+    <string>app-store</string>
+
+    <!-- Signing -->
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>stripSwiftSymbols</key>
+    <true/>
+
+    <!-- Symbols & Debug -->
+    <key>uploadSymbols</key>
+    <true/>
+    <key>uploadBitcode</key>
+    <false/>
+    <key>compileBitcode</key>
+    <false/>
+
+    <!-- Team -->
+    <key>teamID</key>
+    <string>YOUR_TEAM_ID</string>
+
+    <!-- Destination -->
+    <key>destination</key>
+    <string>export</string>
+
+    <!-- Version management -->
+    <key>manageAppVersionAndBuildNumber</key>
+    <true/>
+
+    <!-- Provisioning profile (leave empty for automatic) -->
+    <key>provisioningProfiles</key>
+    <dict/>
+</dict>
+</plist>
