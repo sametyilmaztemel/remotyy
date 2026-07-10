@@ -1,0 +1,45 @@
+# remotty configuration
+global:
+  data_dir: ~/.remotty
+
+signal:
+  host: 0.0.0.0
+  port: 9000
+  dev_mode: false
+  rate_limit: 60
+  # auth_token: set-via-env-REMOTTY_AUTH_TOKEN
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+
+host:
+  signal_url: ws://localhost:9000
+  name: my-server
+  # master_password: set-via-env-REMOTTY_MASTER_PASSWORD
+  features:
+    - terminal
+    - screen
+  max_sessions: 10
+  reconnect_wait: 5s
+  heartbeat_interval: 15s
+  session_timeout: 30m
+
+client:
+  signal_url: ws://localhost:9000
+
+webrtc:
+  ice_servers:
+    - stun:stun.l.google.com:19302
+  ice_timeout: 10
+
+logging:
+  level: info
+  format: console
+  # file: /var/log/remotty/remotty.log
+
+screen:
+  enabled: true
+  fps: 15
+  quality: 60
+  max_dimension: 1920
